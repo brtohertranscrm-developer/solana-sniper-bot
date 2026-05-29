@@ -1,0 +1,20 @@
+{
+  "name": "solana-sniper-bot",
+  "version": "1.0.0",
+  "description": "Solana token scanner & analyzer Telegram bot",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "better-sqlite3": "^11.8.1",
+    "node-cron": "^3.0.3"
+  }
+}
