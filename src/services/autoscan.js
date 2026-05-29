@@ -7,6 +7,7 @@ import { monitorCopyTrade } from './copy-trade.js';
 import { monitorRugPull } from './anti-rug.js';
 import { checkAutoBuy } from './auto-buy.js';
 import { processDCAOrders } from './dca.js';
+import { processReinvest } from './budget-strategy.js';
 import { monitorBondingCurve } from './bonding-curve.js';
 import { monitorVolumeSpikes } from './volume-alert.js';
 import { checkTieredTP } from './tiered-tp.js';
@@ -118,6 +119,7 @@ export function startAutoScan(bot) {
   const bondingInterval = setInterval(() => monitorBondingCurve(bot).catch(err => console.error('[Bonding] interval:', err.message)), config.bondingIntervalMs);
   const volumeInterval = setInterval(() => monitorVolumeSpikes(bot).catch(err => console.error('[Volume] interval:', err.message)), config.volumeIntervalMs);
   const tieredTpInterval = setInterval(() => checkTieredTP(bot).catch(err => console.error('[TieredTP] interval:', err.message)), config.tieredTpIntervalMs);
+  const reinvestInterval = setInterval(() => processReinvest(bot).catch(err => console.error('[Reinvest] interval:', err.message)), 60000);
 
-  return { scanInterval, monitorInterval, copyTradeInterval, antiRugInterval, dcaInterval, bondingInterval, volumeInterval, tieredTpInterval };
+  return { scanInterval, monitorInterval, copyTradeInterval, antiRugInterval, dcaInterval, bondingInterval, volumeInterval, tieredTpInterval, reinvestInterval };
 }

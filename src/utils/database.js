@@ -228,6 +228,9 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_paper_positions ON paper_positions(user_id, status);
   `);
 
+  // Add reinvested column to portfolios if missing
+  try { db.exec('ALTER TABLE portfolios ADD COLUMN reinvested INTEGER DEFAULT 0'); } catch {}
+
   console.log('[DB] Database initialized');
   return db;
 }

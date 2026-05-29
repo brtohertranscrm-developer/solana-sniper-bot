@@ -12,8 +12,9 @@ import { getAutoBuyConfig, setAutoBuyConfig } from '../services/auto-buy.js';
 import { createDCAOrder, getActiveDCAOrders, cancelDCAOrder } from '../services/dca.js';
 import { getActiveWallet, addWalletToRotation, listRotationWallets, removeWalletFromRotation } from '../services/multi-wallet.js';
 import { setPaperMode, isPaperMode, paperBuy, paperSell, getPaperPortfolio, getPaperPnL } from '../services/paper-trade.js';
-import { addChannelMonitor, removeChannelMonitor, getChannelMonitors } from '../services/channel-monitor.js';
+import { addChannelMonitor, removeChannelMonitor, getChannelMonitors, processChannelMessage } from '../services/channel-monitor.js';
 import { setTieredTP } from '../services/tiered-tp.js';
+import { getStrategy, setStrategy, consumeBudget, pauseStrategy, resumeStrategy, getStrategyReport } from '../services/budget-strategy.js';
 
 const CL = { solana: 'Solana', bsc: 'BSC', eth: 'ETH' };
 const CE = { solana: '◎', bsc: '🔶', eth: '⟠' };
@@ -29,7 +30,7 @@ function mainMenu(uid) {
     [{ text: '🎯 Buy', callback_data: 'do_buy_help' }, { text: '💸 Sell', callback_data: 'do_sell_help' }, { text: '💼 Portfolio', callback_data: 'do_portfolio' }],
     [{ text: '🐋 Copy Trade', callback_data: 'sub_copytrade' }, { text: '🛡️ Anti-Rug', callback_data: 'sub_antirug' }, { text: '📡 Auto-Buy', callback_data: 'sub_autobuy' }],
     [{ text: '📈 DCA', callback_data: 'sub_dca' }, { text: '🏎️ Bonding', callback_data: 'sub_bonding' }, { text: '📢 Volume', callback_data: 'sub_volume' }],
-    [{ text: '📺 Channel', callback_data: 'sub_channel' }, { text: '🧪 Paper', callback_data: 'sub_paper' }, { text: '⚙️ Settings', callback_data: 'sub_settings' }],
+    [{ text: '📺 Channel', callback_data: 'sub_channel' }, { text: '🧪 Paper', callback_data: 'sub_paper' }, { text: '🎯 Strategy', callback_data: 'sub_strategy' }],
     [{ text: '💰 Wallets', callback_data: 'sub_wallets' }, { text: '📋 PnL', callback_data: 'do_pnl' }, { text: `🌐 ${CE[ch]} ${CL[ch]}`, callback_data: 'sub_network' }],
   ]}};
 }
@@ -336,18 +337,150 @@ export function setupCommands(bot) {
   bot.command('snipe', ctx => {
     const addr = ctx.message.text.split(' ')[1];
     if (!addr) return ctx.reply('Format: /snipe <token_address>');
-    // Bonding curve snipe - just buy for now
     const ch = getUserChain(ctx.from.id);
     const amt = ch === 'solana' ? 0.01 : ch === 'eth' ? 0.001 : 0.005;
     execBuy(ctx, ch, addr, amt, 15);
   });
 
+  // ===== STRATEGY COMMAND =====
+  bot.command('strategy', ctx => {
+    const p = ctx.message.text.split(' ');
+    const sub = p[1];
+    const ch = getUserChain(ctx.from.id);
+
+    if (!sub) {
+      const r = getStrategyReport(ctx.from.id);
+      if (!r) return ctx.reply(`Set strategi dulu:
+
+/strategy set <daily_budget> <max_per_trade> <max_trades> <target_roi%> <stop_loss%>
+
+Contoh:
+/strategy set 0.1 0.01 10 200 50`);
+      const nu = nativeUnit(ch);
+      ctx.reply(
+        `<b>🎯 Strategy Report</b> ${CE[ch]}
+` +
+        `Status: ${r.enabled ? '✅ ON' : '❌ OFF'} ${r.paused ? '⚠️ PAUSED' : ''}
+` +
+        `Budget: ${r.daily_budget} ${nu}/day
+` +
+        `Max/trade: ${r.max_per_trade} ${nu}
+` +
+        `Max trades: ${r.max_trades_day}/day
+` +
+        `Target ROI: +${r.target_roi}%
+` +
+        `Stop Loss: -${r.stop_loss}%
+` +
+        `Auto-reinvest: ${r.auto_reinvest ? 'ON' : 'OFF'}
+` +
+        `
+<b>Today:</b>
+` +
+        `Spent: ${r.spent_today.toFixed(4)} ${nu}
+` +
+        `Remaining: ${r.remaining.toFixed(4)} ${nu}
+` +
+        `Trades: ${r.trades_today}
+` +
+        `Total PnL: ${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(4)} ${nu}
+` +
+        `
+/strategy on|off|pause|resume
+/strategy set <budget> <max/trade> <max_trades> <roi> <sl>
+/strategy reinvest on|off`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    if (sub === 'on') { setStrategy(ctx.from.id, { enabled: 1 }); ctx.reply('🎯 Strategy ON'); }
+    else if (sub === 'off') { setStrategy(ctx.from.id, { enabled: 0 }); ctx.reply('🎯 Strategy OFF'); }
+    else if (sub === 'pause') { pauseStrategy(ctx.from.id); ctx.reply('Strategy PAUSED'); }
+    else if (sub === 'resume') { resumeStrategy(ctx.from.id); ctx.reply('Strategy RESUMED'); }
+    else if (sub === 'set') {
+      if (!p[2]) return ctx.reply('Format: /strategy set <daily_budget> <max_per_trade> <max_trades> <target_roi%> <stop_loss%>');
+      setStrategy(ctx.from.id, {
+        daily_budget: parseFloat(p[2]),
+        max_per_trade: parseFloat(p[3]),
+        max_trades_day: parseInt(p[4]),
+        target_roi: parseFloat(p[5]),
+        stop_loss: parseFloat(p[6]),
+        enabled: 1,
+        chain: ch,
+      });
+      ctx.reply(`Strategy set! Budget: ${p[2]} ${nativeUnit(ch)}/day | Max: ${p[3]} ${nativeUnit(ch)}/trade | Trades: ${p[4]}/day | ROI: +${p[5]}% | SL: -${p[6]}%`);
+    }
+    else if (sub === 'reinvest') {
+      const v = p[2] === 'on' ? 1 : 0;
+      setStrategy(ctx.from.id, { auto_reinvest: v });
+      ctx.reply(`Auto-reinvest: ${v ? 'ON' : 'OFF'}`);
+    }
+    else { ctx.reply('Sub: on|off|pause|resume|set|reinvest'); }
+  });
+
   bot.command('clear', async ctx => {
     if (!config.adminIds.includes(ctx.from.id)) return ctx.reply('Unauthorized');
-    const db = (await import('../utils/database.js')).default;
+    const { getDb } = await import('../utils/database.js');
+    const db = getDb();
     db.exec('DELETE FROM scanned_tokens');
     ctx.reply('Cleared.');
   });
+
+  bot.command('channel_add', ctx => {
+    const p = ctx.message.text.split(' ');
+    const channelId = p[1];
+    const label = p.slice(2).join(' ') || channelId;
+    if (!channelId) return ctx.reply('Format: /channel_add <channel_id> [label]');
+    const ch = getUserChain(ctx.from.id);
+    addChannelMonitor(ctx.from.id, channelId, ch, label);
+    ctx.reply(`Channel monitor added for ${channelId}.`);
+  });
+
+  bot.command('channel_rm', ctx => {
+    const channelId = ctx.message.text.split(' ')[1];
+    if (!channelId) return ctx.reply('Format: /channel_rm <channel_id>');
+    removeChannelMonitor(ctx.from.id, channelId);
+    ctx.reply('Channel monitor removed.');
+  });
+
+  bot.command('tieredtp', ctx => {
+    const p = ctx.message.text.split(' ');
+    const addr = p[1];
+    if (!addr) return ctx.reply('Format: /tieredtp <token> [100:25,200:25,500:50]');
+    const tiers = (p[2] || '100:25,200:25,500:50').split(',').map(item => {
+      const [pct, sellPct] = item.split(':').map(Number);
+      return { pct, sellPct };
+    }).filter(t => Number.isFinite(t.pct) && Number.isFinite(t.sellPct));
+    setTieredTP(ctx.from.id, getUserChain(ctx.from.id), addr, tiers);
+    ctx.reply(`Tiered TP set for ${addr.slice(0, 8)}...`);
+  });
+
+  bot.command('rotate_add', ctx => {
+    const p = ctx.message.text.split(' ');
+    const address = p[1], privateKey = p[2];
+    if (!address || !privateKey) return ctx.reply('Format: /rotate_add <address> <private_key>');
+    const ch = getUserChain(ctx.from.id);
+    const id = addWalletToRotation(ctx.from.id, ch, address, privateKey);
+    ctx.reply(id ? `Rotation wallet #${id} added for ${CL[ch]}.` : 'Failed to add rotation wallet.');
+  });
+
+  bot.command('rotate_rm', ctx => {
+    const id = parseInt(ctx.message.text.split(' ')[1]);
+    if (!id) return ctx.reply('Format: /rotate_rm <id>');
+    ctx.reply(removeWalletFromRotation(id) ? 'Rotation wallet removed.' : 'Wallet not found.');
+  });
+
+  bot.command('rotate_list', ctx => {
+    const ch = getUserChain(ctx.from.id);
+    const wallets = listRotationWallets(ch);
+    if (!wallets.length) return ctx.reply(`No rotation wallets for ${CL[ch]}.`);
+    let t = `<b>Rotation Wallets - ${CL[ch]}</b>\n\n`;
+    wallets.forEach(w => { t += `#${w.id} ${w.active ? '✅' : '❌'} <code>${w.address}</code>\n`; });
+    ctx.reply(t, { parse_mode: 'HTML' });
+  });
+
+  bot.on(['channel_post', 'text'], ctx => processChannelMessage(ctx));
 
   // ===== CALLBACKS =====
 
@@ -471,5 +604,61 @@ export function setupCommands(bot) {
       `<b>⚙️ Settings</b>\n\nNetwork: ${CE[ch]} ${CL[ch]}\nMode: ${pm?'🧪 PAPER':'⚡ LIVE'}\n\nSubmenus: Network, Wallets, Paper\nUse /network /wallet /paper`,
       { parse_mode: 'HTML', ...back() }
     );
+  });
+
+  // Strategy submenu
+  bot.action('sub_strategy', ctx => {
+    ctx.answerCbQuery();
+    const ch = getUserChain(ctx.from.id);
+    const r = getStrategyReport(ctx.from.id);
+    const nu = nativeUnit(ch);
+    if (!r) {
+      ctx.editMessageText(
+        `<b>🎯 Strategy (Budget Manager)</b>
+
+Set daily budget dan auto-trade rules.
+
+/strategy set <daily_budget> <max_per_trade> <max_trades> <target_roi%> <stop_loss%>
+
+Contoh:
+/strategy set 0.1 0.01 10 200 50
+
+Fitur:
+- Budget limit harian
+- Max per trade
+- Max trades per hari
+- Auto TP/SL
+- Auto-reinvest profit`,
+        { parse_mode: 'HTML', ...back() }
+      );
+    } else {
+      ctx.editMessageText(
+        `<b>🎯 Strategy</b> ${CE[ch]}
+Status: ${r.enabled ? '✅' : '❌'} ${r.paused ? '⚠️ PAUSED' : ''}
+` +
+        `Budget: ${r.daily_budget} ${nu}/day
+` +
+        `Max/trade: ${r.max_per_trade} ${nu}
+` +
+        `Trades: ${r.max_trades_day}/day
+` +
+        `ROI target: +${r.target_roi}%
+` +
+        `Stop loss: -${r.stop_loss}%
+` +
+        `Reinvest: ${r.auto_reinvest ? 'ON' : 'OFF'}
+` +
+        `
+<b>Today:</b> Spent ${r.spent_today.toFixed(4)} | Left ${r.remaining.toFixed(4)} ${nu}
+` +
+        `PnL: ${r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(4)} ${nu}
+` +
+        `
+/strategy on|off|pause|resume
+/strategy set <budget> <max/trade> <trades> <roi> <sl>
+/strategy reinvest on|off`,
+        { parse_mode: 'HTML', ...back() }
+      );
+    }
   });
 }
