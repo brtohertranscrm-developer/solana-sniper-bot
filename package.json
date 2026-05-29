@@ -9,6 +9,7 @@
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
+    "@solana/spl-token": "^0.3.11",
     "@solana/web3.js": "^1.98.0",
     "axios": "^1.7.9",
     "better-sqlite3": "^11.8.1",

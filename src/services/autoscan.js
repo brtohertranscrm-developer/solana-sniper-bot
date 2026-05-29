@@ -2,6 +2,7 @@ import { scanAllSources, scoreToken } from './scanner.js';
 import { analyzeHolders } from './analyzer.js';
 import { upsertToken, getStats } from '../utils/database.js';
 import { config } from '../config.js';
+import { monitorPositions } from './portfolio.js';
 
 const CHAINS = ['solana', 'bsc', 'eth'];
 let isScanning = false;
@@ -12,11 +13,7 @@ export async function runScanCycle(bot) {
 
   try {
     const tokens = await scanAllSources(CHAINS);
-    if (tokens.length === 0) {
-      console.log('[Scan] No tokens found this cycle');
-      isScanning = false;
-      return;
-    }
+    if (!tokens.length) { isScanning = false; return; }
 
     const alerts = [];
 
@@ -25,14 +22,13 @@ export async function runScanCycle(bot) {
       if (!address) continue;
 
       const score = scoreToken(token);
-
       let risk = 'UNKNOWN';
       if (score.score >= 4 && token.chain === 'solana') {
-        const holderAnalysis = await analyzeHolders(address);
-        risk = holderAnalysis?.risk || 'UNKNOWN';
+        const h = await analyzeHolders(address);
+        risk = h?.risk || 'UNKNOWN';
       }
 
-      const tokenData = {
+      upsertToken({
         address,
         chain: token.chain || 'solana',
         name: token.name || 'Unknown',
@@ -45,34 +41,31 @@ export async function runScanCycle(bot) {
         score: score.score,
         grade: score.grade,
         risk,
-      };
-
-      upsertToken(tokenData);
+      });
 
       if (score.grade === 'A+' || score.grade === 'A') {
-        alerts.push(tokenData);
+        alerts.push({ ...token, chain: token.chain, score, risk });
       }
     }
 
+    // Alert admins for high-potential tokens
     if (alerts.length > 0 && bot) {
       for (const adminId of config.adminIds) {
-        let msg = `HIGH POTENTIAL TOKEN DETECTED:\n\n`;
+        let msg = `⚡ HIGH POTENTIAL TOKEN:\n\n`;
         alerts.slice(0, 5).forEach(t => {
-          const chainLabel = t.chain.toUpperCase();
-          msg += `[${t.grade}] [${chainLabel}] ${t.name} (${t.symbol})\n`;
-          msg += `MC: $${t.market_cap.toLocaleString()} | Vol: $${t.volume_24h.toLocaleString()} | Holders: ${t.holders} | Risk: ${t.risk}\n`;
+          msg += `[${t.score.grade}] ${t.name} (${t.symbol})\n`;
+          msg += `MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Risk: ${risk}\n`;
           msg += `https://dexscreener.com/${t.chain}/${t.address}\n\n`;
         });
-        try {
-          await bot.telegram.sendMessage(adminId, msg, { disable_web_page_preview: true });
-        } catch {
-          // ignore
-        }
+        try { await bot.telegram.sendMessage(adminId, msg, { disable_web_page_preview: true }); } catch {}
       }
     }
 
+    // Monitor positions for TP/SL (every 4th scan cycle to save rate limits)
+    // Actually monitor on separate interval
+
     const stats = getStats();
-    console.log(`[Scan] Processed ${tokens.length} tokens | DB total: ${stats.total}`);
+    console.log(`[Scan] ${tokens.length} tokens | DB: ${stats.total}`);
   } catch (err) {
     console.error('[Scan] Error:', err.message);
   } finally {
@@ -80,13 +73,35 @@ export async function runScanCycle(bot) {
   }
 }
 
+/**
+ * Start auto-scan + position monitoring
+ */
 export function startAutoScan(bot) {
-  console.log(`[Scan] Auto-scan started (interval: ${config.scanIntervalMs}ms) | Chains: ${CHAINS.join(', ')}`);
+  console.log(`[Scan] Auto-scan started (${config.scanIntervalMs}ms) | Chains: ${CHAINS.join(', ')}`);
   runScanCycle(bot);
 
-  const interval = setInterval(() => {
-    runScanCycle(bot);
-  }, config.scanIntervalMs);
+  // Scan interval
+  const scanInterval = setInterval(() => runScanCycle(bot), config.scanIntervalMs);
 
-  return interval;
+  // Position monitoring (every 30 seconds)
+  const monitorInterval = setInterval(async () => {
+    try {
+      const toSell = await monitorPositions(bot);
+      if (toSell.length > 0 && bot) {
+        for (const adminId of config.adminIds) {
+          let msg = `🎯 TP/SL TRIGGERED:\n\n`;
+          toSell.forEach(p => {
+            msg += `${p.reason}: ${p.token_symbol} (${p.token_address.slice(0, 8)}...)\n`;
+            msg += `${p.pctChange > 0 ? '+' : ''}${p.pctChange.toFixed(1)}%\n`;
+            msg += `Use /sell_${p.token_address} to sell\n\n`;
+          });
+          try { await bot.telegram.sendMessage(adminId, msg); } catch {}
+        }
+      }
+    } catch (err) {
+      console.error('[Monitor] Error:', err.message);
+    }
+  }, 30000);
+
+  return { scanInterval, monitorInterval };
 }
