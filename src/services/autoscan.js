@@ -3,6 +3,13 @@ import { analyzeHolders } from './analyzer.js';
 import { upsertToken, getStats } from '../utils/database.js';
 import { config } from '../config.js';
 import { monitorPositions } from './portfolio.js';
+import { monitorCopyTrade } from './copy-trade.js';
+import { monitorRugPull } from './anti-rug.js';
+import { checkAutoBuy } from './auto-buy.js';
+import { processDCAOrders } from './dca.js';
+import { monitorBondingCurve } from './bonding-curve.js';
+import { monitorVolumeSpikes } from './volume-alert.js';
+import { checkTieredTP } from './tiered-tp.js';
 
 const CHAINS = ['solana', 'bsc', 'eth'];
 let isScanning = false;
@@ -43,6 +50,8 @@ export async function runScanCycle(bot) {
         risk,
       });
 
+      await checkAutoBuy(bot, { ...token, chain: token.chain || 'solana' });
+
       if (score.grade === 'A+' || score.grade === 'A') {
         alerts.push({ ...token, chain: token.chain, score, risk });
       }
@@ -54,7 +63,7 @@ export async function runScanCycle(bot) {
         let msg = `⚡ HIGH POTENTIAL TOKEN:\n\n`;
         alerts.slice(0, 5).forEach(t => {
           msg += `[${t.score.grade}] ${t.name} (${t.symbol})\n`;
-          msg += `MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Risk: ${risk}\n`;
+          msg += `MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Risk: ${t.risk}\n`;
           msg += `https://dexscreener.com/${t.chain}/${t.address}\n\n`;
         });
         try { await bot.telegram.sendMessage(adminId, msg, { disable_web_page_preview: true }); } catch {}
@@ -103,5 +112,12 @@ export function startAutoScan(bot) {
     }
   }, 30000);
 
-  return { scanInterval, monitorInterval };
+  const copyTradeInterval = setInterval(() => monitorCopyTrade(bot).catch(err => console.error('[CopyTrade] interval:', err.message)), config.copyTradeIntervalMs);
+  const antiRugInterval = setInterval(() => monitorRugPull(bot).catch(err => console.error('[AntiRug] interval:', err.message)), config.antiRugIntervalMs);
+  const dcaInterval = setInterval(() => processDCAOrders(bot).catch(err => console.error('[DCA] interval:', err.message)), config.dcaIntervalMs);
+  const bondingInterval = setInterval(() => monitorBondingCurve(bot).catch(err => console.error('[Bonding] interval:', err.message)), config.bondingIntervalMs);
+  const volumeInterval = setInterval(() => monitorVolumeSpikes(bot).catch(err => console.error('[Volume] interval:', err.message)), config.volumeIntervalMs);
+  const tieredTpInterval = setInterval(() => checkTieredTP(bot).catch(err => console.error('[TieredTP] interval:', err.message)), config.tieredTpIntervalMs);
+
+  return { scanInterval, monitorInterval, copyTradeInterval, antiRugInterval, dcaInterval, bondingInterval, volumeInterval, tieredTpInterval };
 }

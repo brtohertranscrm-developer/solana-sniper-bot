@@ -59,9 +59,9 @@ export function getSavedWallets(chain) {
   `);
 
   if (chain) {
-    return db.prepare('SELECT id, chain, label, address, created_at FROM wallets WHERE chain = ? ORDER BY id DESC').all(chain);
+    return db.prepare('SELECT id, chain, label, address, private_key, mnemonic, created_at FROM wallets WHERE chain = ? ORDER BY id DESC').all(chain);
   }
-  return db.prepare('SELECT id, chain, label, address, created_at FROM wallets ORDER BY id DESC').all();
+  return db.prepare('SELECT id, chain, label, address, private_key, mnemonic, created_at FROM wallets ORDER BY id DESC').all();
 }
 
 /**
