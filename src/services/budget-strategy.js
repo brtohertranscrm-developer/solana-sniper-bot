@@ -22,8 +22,9 @@ export function setStrategy(userId, fields) {
   if (existing) {
     db.prepare(`UPDATE user_strategy SET ${sets.join(', ')}, updated_at = datetime('now') WHERE user_id = @userId`).run(vals);
   } else {
-    const cols = ['user_id', ...Object.keys(vals).filter(k => k !== 'userId'), 'updated_at'];
-    const phs = cols.map(c => `@${c === 'userId' ? 'userId' : c}`).join(', ');
+    const fieldKeys = Object.keys(vals).filter(k => k !== 'userId');
+    const cols = ['user_id', ...fieldKeys, 'updated_at'];
+    const phs = ['@userId', ...fieldKeys.map(k => `@${k}`), '@updated_at'].join(', ');
     const insertVals = { ...vals, updated_at: new Date().toISOString() };
     db.prepare(`INSERT INTO user_strategy (${cols.join(', ')}) VALUES (${phs})`).run(insertVals);
   }
@@ -77,34 +78,33 @@ export function resumeStrategy(userId) {
   db.prepare('UPDATE budget_pauses SET active = 0 WHERE user_id = ?').run(userId);
 }
 
-export function processReinvest(bot) {
+export async function processReinvest(bot) {
   const db = getDb();
-  // Find users with auto_reinvest enabled and closed profitable positions
-  const users = db.prepare("SELECT DISTINCT user_id FROM user_strategy WHERE enabled = 1 AND auto_reinvest = 1").all();
-  for (const u of users) {
-    const profits = db.prepare(
-      "SELECT COALESCE(SUM(pnl_amount), 0) as total FROM portfolios WHERE user_id = ? AND status = 'closed' AND pnl_amount > 0 AND reinvested = 0"
-    ).get(u.user_id);
-    if (profits && profits.total > 0) {
-      const s = db.prepare('SELECT * FROM user_strategy WHERE user_id = ?').get(u.user_id);
-      if (s) {
-        const reinvestAmt = Math.min(profits.total, s.max_per_trade);
-        db.prepare("UPDATE portfolios SET reinvested = 1 WHERE user_id = ? AND status = 'closed' AND reinvested = 0 AND pnl_amount > 0").run(u.user_id);
-        // Notify user
-        if (bot) {
-          for (const adminId of config.adminIds) {
-            if (String(adminId) === String(u.user_id)) {
-              try {
-                bot.telegram.sendMessage(adminId,
-                  `💰 <b>Auto-Reinvest</b>\n${reinvestAmt.toFixed(4)} ${nativeUnit(s.chain)} profit reinvested into new trades.`,
-                  { parse_mode: 'HTML' }
-                );
-              } catch {}
-            }
+  try {
+    const users = db.prepare("SELECT DISTINCT user_id FROM user_strategy WHERE enabled = 1 AND auto_reinvest = 1").all();
+    for (const u of users) {
+      const profits = db.prepare(
+        "SELECT COALESCE(SUM(pnl_amount), 0) as total FROM portfolios WHERE user_id = ? AND status = 'sold' AND pnl_amount > 0 AND reinvested = 0"
+      ).get(u.user_id);
+      if (profits && profits.total > 0) {
+        const s = db.prepare('SELECT * FROM user_strategy WHERE user_id = ?').get(u.user_id);
+        if (s) {
+          const reinvestAmt = Math.min(profits.total, s.max_per_trade);
+          db.prepare("UPDATE portfolios SET reinvested = 1 WHERE user_id = ? AND status = 'sold' AND reinvested = 0 AND pnl_amount > 0").run(u.user_id);
+          if (bot) {
+            try {
+              await bot.telegram.sendMessage(
+                u.user_id,
+                `💰 <b>Auto-Reinvest</b>\n${reinvestAmt.toFixed(4)} ${nativeUnit(s.chain)} profit marked for the next strategy cycle.`,
+                { parse_mode: 'HTML' }
+              );
+            } catch {}
           }
         }
       }
     }
+  } catch (err) {
+    console.error('[BudgetStrategy] reinvest:', err.message);
   }
 }
 
@@ -121,7 +121,7 @@ export function getStrategyReport(userId) {
     "SELECT COUNT(*) as cnt FROM portfolios WHERE user_id = ? AND created_at LIKE ?"
   ).get(userId, `${today}%`);
   const pnl = db.prepare(
-    "SELECT COALESCE(SUM(pnl_amount), 0) as total, COUNT(*) as closed FROM portfolios WHERE user_id = ? AND status = 'closed'"
+    "SELECT COALESCE(SUM(pnl_amount), 0) as total, COUNT(*) as closed FROM portfolios WHERE user_id = ? AND status = 'sold'"
   ).get(userId);
   const paused = db.prepare('SELECT reason FROM budget_pauses WHERE user_id = ? AND active = 1').get(userId);
 

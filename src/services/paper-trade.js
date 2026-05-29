@@ -38,13 +38,18 @@ export function paperBuy(userId, chain, tokenAddress, amountNative, price = 0, s
   }
 }
 
-export function paperSell(userId, tokenAddress, price = 0) {
+export function paperSell(userId, chainOrTokenAddress, tokenAddressOrPrice = 0, maybePrice = 0) {
   try {
+    const hasChain = ['solana', 'bsc', 'eth'].includes(String(chainOrTokenAddress).toLowerCase());
+    const chain = hasChain ? String(chainOrTokenAddress).toLowerCase() : null;
+    const tokenAddress = hasChain ? tokenAddressOrPrice : chainOrTokenAddress;
+    const price = hasChain ? maybePrice : tokenAddressOrPrice;
     const pos = getDb().prepare(`
       SELECT * FROM paper_positions
       WHERE user_id = ? AND token_address = ? AND status = 'holding'
+        AND (? IS NULL OR chain = ?)
       ORDER BY id DESC LIMIT 1
-    `).get(userId, tokenAddress);
+    `).get(userId, tokenAddress, chain, chain);
     if (!pos) return null;
     const exit = price || pos.entry_price;
     const pnl = (exit - pos.entry_price) * pos.token_amount;

@@ -1,16 +1,23 @@
 import { getDb } from '../utils/database.js';
+import { getSavedWallets } from './wallet.js';
 
 const cursors = new Map();
 
 export function getActiveWallet(chain) {
   try {
     const wallets = getDb().prepare('SELECT * FROM wallet_rotation WHERE chain = ? AND active = 1 ORDER BY id').all(chain);
-    if (!wallets.length) return null;
-    const idx = cursors.get(chain) || 0;
-    const wallet = wallets[idx % wallets.length];
-    cursors.set(chain, (idx + 1) % wallets.length);
-    getDb().prepare("UPDATE wallet_rotation SET last_used_at = datetime('now') WHERE id = ?").run(wallet.id);
-    return wallet;
+    if (wallets.length) {
+      const idx = cursors.get(chain) || 0;
+      const wallet = wallets[idx % wallets.length];
+      cursors.set(chain, (idx + 1) % wallets.length);
+      getDb().prepare("UPDATE wallet_rotation SET last_used_at = datetime('now') WHERE id = ?").run(wallet.id);
+      return { ...wallet, privateKey: wallet.private_key };
+    }
+
+    const saved = getSavedWallets(chain);
+    const wallet = saved[0];
+    if (!wallet) return null;
+    return { ...wallet, privateKey: wallet.private_key };
   } catch (err) {
     console.error('[WalletRotation] get:', err.message);
     return null;

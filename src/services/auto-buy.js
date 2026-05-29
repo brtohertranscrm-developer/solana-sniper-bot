@@ -12,6 +12,7 @@ async function notify(bot, userId, text) {
 
 export function setAutoBuyConfig(userId, chain, enabled, minMC, maxMC, minHolders, minLiq, maxSlippage, amountPerBuy, maxBuysPerHour) {
   try {
+    const current = getDb().prepare('SELECT * FROM auto_buy_config WHERE user_id = ? AND chain = ?').get(userId, chain) || {};
     getDb().prepare(`
       INSERT INTO auto_buy_config (user_id, chain, enabled, min_mc, max_mc, min_holders, min_liq, max_slippage, amount_per_buy, max_buys_per_hour, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -25,7 +26,18 @@ export function setAutoBuyConfig(userId, chain, enabled, minMC, maxMC, minHolder
         amount_per_buy = excluded.amount_per_buy,
         max_buys_per_hour = excluded.max_buys_per_hour,
         updated_at = datetime('now')
-    `).run(userId, chain, enabled ? 1 : 0, minMC, maxMC, minHolders, minLiq, maxSlippage, amountPerBuy, maxBuysPerHour);
+    `).run(
+      userId,
+      chain,
+      enabled == null ? (current.enabled || 0) : (enabled ? 1 : 0),
+      minMC == null || minMC === '' ? (current.min_mc ?? 0) : Number(minMC),
+      maxMC == null || maxMC === '' ? (current.max_mc ?? 1_000_000_000) : Number(maxMC),
+      minHolders == null || minHolders === '' ? (current.min_holders ?? 0) : Number(minHolders),
+      minLiq == null || minLiq === '' ? (current.min_liq ?? 0) : Number(minLiq),
+      maxSlippage == null || maxSlippage === '' ? (current.max_slippage ?? 10) : Number(maxSlippage),
+      amountPerBuy == null || amountPerBuy === '' ? (current.amount_per_buy ?? 0) : Number(amountPerBuy),
+      maxBuysPerHour == null || maxBuysPerHour === '' ? (current.max_buys_per_hour ?? 1) : Number(maxBuysPerHour),
+    );
     return true;
   } catch (err) {
     console.error('[AutoBuy] config:', err.message);
@@ -33,12 +45,15 @@ export function setAutoBuyConfig(userId, chain, enabled, minMC, maxMC, minHolder
   }
 }
 
-export function getAutoBuyConfig(userId) {
+export function getAutoBuyConfig(userId, chain = null) {
   try {
+    if (chain) {
+      return getDb().prepare('SELECT * FROM auto_buy_config WHERE user_id = ? AND chain = ?').get(userId, chain) || null;
+    }
     return getDb().prepare('SELECT * FROM auto_buy_config WHERE user_id = ? ORDER BY chain').all(userId);
   } catch (err) {
     console.error('[AutoBuy] getConfig:', err.message);
-    return [];
+    return chain ? null : [];
   }
 }
 

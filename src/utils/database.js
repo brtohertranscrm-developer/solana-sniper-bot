@@ -219,6 +219,29 @@ export function initDb() {
       UNIQUE(user_id, chain, token_address)
     );
 
+    CREATE TABLE IF NOT EXISTS user_strategy (
+      user_id INTEGER PRIMARY KEY,
+      chain TEXT DEFAULT 'solana',
+      daily_budget REAL DEFAULT 0.1,
+      max_per_trade REAL DEFAULT 0.01,
+      max_trades_day INTEGER DEFAULT 10,
+      target_roi REAL DEFAULT 200,
+      stop_loss REAL DEFAULT -50,
+      auto_reinvest INTEGER DEFAULT 0,
+      enabled INTEGER DEFAULT 0,
+      tp_tiers TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS budget_pauses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      reason TEXT,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_tokens_score ON scanned_tokens(score DESC);
     CREATE INDEX IF NOT EXISTS idx_tokens_chain ON scanned_tokens(chain);
     CREATE INDEX IF NOT EXISTS idx_tokens_grade ON scanned_tokens(grade);
@@ -226,6 +249,7 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_dca_active ON dca_orders(status, next_run_at);
     CREATE INDEX IF NOT EXISTS idx_volume_snapshots ON volume_snapshots(chain, token_address, created_at);
     CREATE INDEX IF NOT EXISTS idx_paper_positions ON paper_positions(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_budget_pauses ON budget_pauses(user_id, active);
   `);
 
   // Add reinvested column to portfolios if missing
