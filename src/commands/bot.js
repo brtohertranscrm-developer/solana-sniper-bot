@@ -1,60 +1,130 @@
 import { config } from '../config.js';
-import { getTopTokens, getTokensByGrade, getToken, getStats } from '../utils/database.js';
+import {
+  getTopTokens, getTokensByGrade, getUserChain, setUserChain, getStats,
+} from '../utils/database.js';
 import { getTokenOverview, analyzeHolders } from '../services/analyzer.js';
-import { scanAllSources, scoreToken, fetchBirdeyeTrending, fetchDexscreenerNewPairs } from '../services/scanner.js';
+import { scanChain, scoreToken, fetchTrending } from '../services/scanner.js';
+import {
+  generateSolanaWallet, generateEVMWallet, getSavedWallets, saveWallet,
+} from '../services/wallet.js';
+
+const CHAIN_LABELS = {
+  solana: 'Solana',
+  bsc: 'BSC',
+  eth: 'ETH',
+};
+
+const CHAIN_EMOJI = {
+  solana: '◎',
+  bsc: '🔶',
+  eth: '⟠',
+};
+
+function networkKeyboard(userId) {
+  const active = getUserChain(userId);
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: `${CHAIN_EMOJI.solana} Solana`, callback_data: `chain_solana`, },
+          { text: `${CHAIN_EMOJI.bsc} BSC`, callback_data: `chain_bsc`, },
+          { text: `${CHAIN_EMOJI.eth} ETH`, callback_data: `chain_eth`, },
+        ],
+      ],
+    },
+  };
+}
+
+function chainKeyboard(chain) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: `${CHAIN_EMOJI.solana} Solana`, callback_data: `chain_solana`, },
+          { text: `${CHAIN_EMOJI.bsc} BSC`, callback_data: `chain_bsc`, },
+          { text: `${CHAIN_EMOJI.eth} ETH`, callback_data: `chain_eth`, },
+        ],
+      ],
+    },
+  };
+}
 
 export function setupCommands(bot) {
-  // /start
+  // ===== /start =====
   bot.start((ctx) => {
     ctx.reply(
-      `Solana Token Scanner Bot v1.0\n\n` +
+      `Solana Token Scanner Bot v1.1\nMulti-Chain Support\n\n` +
       `Commands:\n` +
-      `/scan - Scan token baru sekarang\n` +
-      `/top - Token dengan score tertinggi\n` +
+      `/scan - Scan token baru\n` +
+      `/top - Top scored tokens\n` +
       `/analyze [address] - Analisis detail token\n` +
       `/trending - Token trending\n` +
+      `/wallet - Generate wallet\n` +
+      `/network - Ganti jaringan\n` +
       `/stats - Statistik scanner\n` +
-      `/help - Bantuan`
+      `/help - Bantuan`,
+      networkKeyboard(ctx.from.id)
     );
   });
 
-  // /help
+  // ===== /help =====
   bot.help((ctx) => {
     ctx.reply(
-      `Solana Token Scanner Bot\n\n` +
-      `Phase 1: Scanner & Analyzer\n\n` +
+      `Solana Token Scanner Bot v1.1\n\n` +
+      `Multi-Chain: Solana | BSC | ETH\n\n` +
       `Commands:\n` +
       `/scan - Manual scan token baru\n` +
-      `/top [A+/A/B/C/D] - Top token by grade\n` +
-      `/analyze <address> - Detail analisis token\n` +
+      `/top [grade] - Top token by grade\n` +
+      `/analyze <address> - Detail analisis\n` +
       `/trending - Token trending\n` +
-      `/stats - Statistik database\n` +
-      `/help - Bantuan\n\n` +
-      `Scoring:\n` +
-      `A+ = Sangat potensial (10+)\n` +
-      `A = Potensial (7-9)\n` +
-      `B = Menarik (5-6)\n` +
-      `C = Perlu perhatian (3-4)\n` +
-      `D = Rendah (0-2)`
+      `/wallet [solana|bsc|eth] - Generate wallet\n` +
+      `/mywallets - Lihat wallet tersimpan\n` +
+      `/network - Ganti jaringan aktif\n` +
+      `/stats - Statistik database\n\n` +
+      `Scoring: A+(10+) | A(7-9) | B(5-6) | C(3-4) | D(0-2)`,
+      networkKeyboard(ctx.from.id)
     );
   });
 
-  // /scan - Manual scan
+  // ===== /network - Switch network =====
+  bot.command('network', (ctx) => {
+    const active = getUserChain(ctx.from.id);
+    ctx.reply(
+      `Pilih jaringan aktif:\n\nSaat ini: ${CHAIN_EMOJI[active]} ${CHAIN_LABELS[active]}`,
+      networkKeyboard(ctx.from.id)
+    );
+  });
+
+  // ===== Callback: network switch =====
+  bot.action(/^chain_(solana|bsc|eth)$/, (ctx) => {
+    const chain = ctx.match[1];
+    setUserChain(ctx.from.id, chain);
+    ctx.answerCbQuery(`Switched to ${CHAIN_LABELS[chain]}`);
+    ctx.editMessageText(
+      `Jaringan aktif: ${CHAIN_EMOJI[chain]} ${CHAIN_LABELS[chain]}\n\n` +
+      `Ketik /scan untuk scan ${CHAIN_LABELS[chain]}\nKetik /help untuk semua perintah`,
+      chainKeyboard(chain)
+    );
+  });
+
+  // ===== /scan =====
   bot.command('scan', async (ctx) => {
-    const msg = await ctx.reply('Scanning...');
+    const chain = getUserChain(ctx.from.id);
+    const msg = await ctx.reply(`${CHAIN_EMOJI[chain]} Scanning ${CHAIN_LABELS[chain]}...`);
+
     try {
-      const tokens = await scanAllSources();
+      const tokens = await scanChain(chain);
       if (tokens.length === 0) {
         await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, 'Tidak ada token ditemukan.');
         return;
       }
 
-      let text = `Scan selesai. ${tokens.length} token ditemukan:\n\n`;
+      let text = `${CHAIN_EMOJI[chain]} Scan ${CHAIN_LABELS[chain]} - ${tokens.length} token:\n\n`;
       tokens.slice(0, 15).forEach((t, i) => {
         const score = scoreToken(t);
         text += `${i + 1}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
-        text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Liq: $${parseFloat(t.liquidity || 0).toLocaleString()} | Holders: ${t.holders}\n`;
-        text += `   Source: ${t.source} | /analyze_${t.address}\n\n`;
+        text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Liq: $${parseFloat(t.liquidity || 0).toLocaleString()} | Txns: ${t.holders}\n`;
+        text += `   /analyze_${t.address}\n\n`;
       });
 
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text, {
@@ -65,32 +135,34 @@ export function setupCommands(bot) {
     }
   });
 
-  // /top - Top scored tokens
+  // ===== /top =====
   bot.command('top', async (ctx) => {
+    const chain = getUserChain(ctx.from.id);
     const grade = ctx.message.text.replace('/top', '').trim().toUpperCase();
-    const tokens = grade ? getTokensByGrade(grade, 10) : getTopTokens(15);
+    const tokens = grade ? getTokensByGrade(chain, grade, 10) : getTopTokens(chain, 15);
 
     if (tokens.length === 0) {
       return ctx.reply(`Tidak ada token ${grade ? `grade ${grade}` : 'terdeteksi'} di database.`);
     }
 
-    let text = `Top Tokens${grade ? ` (Grade ${grade})` : ''}:\n\n`;
+    let text = `${CHAIN_EMOJI[chain]} Top Tokens ${CHAIN_LABELS[chain]}${grade ? ` (${grade})` : ''}:\n\n`;
     tokens.forEach((t, i) => {
       text += `${i + 1}. ${t.name} (${t.symbol}) [${t.grade}] Score: ${t.score}\n`;
-      text += `   MC: $${t.market_cap.toLocaleString()} | Vol24h: $${t.volume_24h.toLocaleString()} | Risk: ${t.risk}\n`;
+      text += `   MC: $${t.market_cap.toLocaleString()} | Vol: $${t.volume_24h.toLocaleString()} | Risk: ${t.risk}\n`;
       text += `   /analyze_${t.address}\n\n`;
     });
 
     await ctx.reply(text, { disable_web_page_preview: true });
   });
 
-  // /analyze
+  // ===== /analyze =====
   bot.command('analyze', async (ctx) => {
     const parts = ctx.message.text.split(' ');
     const address = parts[1] || '';
+    const chain = getUserChain(ctx.from.id);
 
     if (!address) {
-      return ctx.reply('Format: /analyze <token_address>');
+      return ctx.reply('Format: /analyze <token_address>', chainKeyboard(chain));
     }
 
     const cleanAddress = address.replace(/^\/analyze_/, '');
@@ -102,7 +174,7 @@ export function setupCommands(bot) {
         analyzeHolders(cleanAddress),
       ]);
 
-      let text = `Analysis Report\n`;
+      let text = `${CHAIN_EMOJI[chain]} Analysis Report - ${CHAIN_LABELS[chain]}\n`;
       text += `Address: ${cleanAddress.slice(0, 8)}...${cleanAddress.slice(-4)}\n\n`;
 
       if (overview) {
@@ -111,30 +183,34 @@ export function setupCommands(bot) {
         text += `Market Cap: $${parseFloat(overview.mc || 0).toLocaleString()}\n`;
         text += `Volume 24h: $${parseFloat(overview.v24hUSD || 0).toLocaleString()}\n`;
         text += `Liquidity: $${parseFloat(overview.liquidity || 0).toLocaleString()}\n`;
-        text += `Price 24h: ${overview.priceChange24h || 'N/A'}%\n`;
-        text += `Price 6h: ${overview.priceChange6h || 'N/A'}%\n`;
-        text += `Price 1h: ${overview.priceChange1h || 'N/A'}%\n`;
+        text += `24h: ${overview.priceChange24h || 'N/A'}% | 6h: ${overview.priceChange6h || 'N/A'}% | 1h: ${overview.priceChange1h || 'N/A'}%\n`;
       } else {
-        text += `Basic info: Data not available\n`;
+        text += `Basic info: Data not available (Birdeye API key needed)\n`;
       }
 
       text += `\nHolder Analysis:\n`;
       if (holders) {
         text += `Analyzed: ${holders.totalHolders} wallets\n`;
-        text += `Top holder owns: ${holders.topHolderPct}%\n`;
-        text += `Top 5 own: ${holders.top5Pct}%\n`;
+        text += `Top holder: ${holders.topHolderPct}%\n`;
+        text += `Top 5: ${holders.top5Pct}%\n`;
         text += `Risk: ${holders.risk}\n\n`;
         text += `Top Holders:\n`;
         holders.holders.forEach((h, i) => {
           text += `  ${i + 1}. ${h.address.slice(0, 6)}...${h.address.slice(-4)} (${h.pct}%)\n`;
         });
       } else {
-        text += `Not available (need Helius API key for full data)\n`;
+        text += `Not available (Helius API key needed for Solana holders)\n`;
       }
 
       text += `\nLinks:\n`;
-      text += `Dexscreener: https://dexscreener.com/solana/${cleanAddress}\n`;
-      text += `Solscan: https://solscan.io/token/${cleanAddress}\n`;
+      text += `Dexscreener: https://dexscreener.com/${chain}/${cleanAddress}\n`;
+      if (chain === 'solana') {
+        text += `Solscan: https://solscan.io/token/${cleanAddress}\n`;
+      } else if (chain === 'bsc') {
+        text += `BscScan: https://bscscan.com/token/${cleanAddress}\n`;
+      } else {
+        text += `Etherscan: https://etherscan.io/token/${cleanAddress}\n`;
+      }
 
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text, {
         disable_web_page_preview: true,
@@ -144,41 +220,23 @@ export function setupCommands(bot) {
     }
   });
 
-  // /trending
+  // ===== /trending =====
   bot.command('trending', async (ctx) => {
-    const msg = await ctx.reply('Fetching trending tokens...');
+    const chain = getUserChain(ctx.from.id);
+    const msg = await ctx.reply(`${CHAIN_EMOJI[chain]} Fetching trending ${CHAIN_LABELS[chain]}...`);
+
     try {
-      const [birdeye, dex] = await Promise.allSettled([
-        fetchBirdeyeTrending(10),
-        fetchDexscreenerNewPairs(10),
-      ]);
+      const tokens = await fetchTrending(chain);
 
-      let text = `Trending Solana Tokens:\n\n`;
-      let count = 0;
+      let text = `${CHAIN_EMOJI[chain]} Trending ${CHAIN_LABELS[chain]}:\n\n`;
+      tokens.slice(0, 15).forEach((t, i) => {
+        const score = scoreToken(t);
+        text += `${i + 1}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
+        text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | +${parseFloat(t.priceChange24h || 0).toFixed(1)}%\n`;
+        text += `   /analyze_${t.address}\n\n`;
+      });
 
-      if (birdeye.status === 'fulfilled') {
-        birdeye.value.forEach((t, i) => {
-          if (count >= 15) return;
-          count++;
-          const score = scoreToken(t);
-          text += `${count}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
-          text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | +${t.priceChange24h || 0}%\n`;
-          text += `   Source: Birdeye | /analyze_${t.address}\n\n`;
-        });
-      }
-
-      if (dex.status === 'fulfilled') {
-        dex.value.forEach((t) => {
-          if (count >= 15) return;
-          count++;
-          const score = scoreToken(t);
-          text += `${count}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
-          text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Liq: $${parseFloat(t.liquidity || 0).toLocaleString()}\n`;
-          text += `   Source: Dexscreener | /analyze_${t.address}\n\n`;
-        });
-      }
-
-      if (count === 0) {
+      if (tokens.length === 0) {
         text += 'Tidak ada trending token ditemukan.';
       }
 
@@ -190,12 +248,77 @@ export function setupCommands(bot) {
     }
   });
 
-  // /stats
+  // ===== /wallet - Generate wallet =====
+  bot.command('wallet', async (ctx) => {
+    const parts = ctx.message.text.split(' ');
+    let chain = (parts[1] || getUserChain(ctx.from.id)).toLowerCase();
+
+    if (!CHAIN_LABELS[chain]) {
+      return ctx.reply(
+        `Format: /wallet [solana|bsc|eth]\n\n${CHAIN_EMOJI.solana} Solana\n${CHAIN_EMOJI.bsc} BSC\n${CHAIN_EMOJI.eth} ETH\n\nWallet BSC & ETH sama (EVM compatible)`,
+        networkKeyboard(ctx.from.id)
+      );
+    }
+
+    try {
+      let wallet;
+      if (chain === 'solana') {
+        wallet = generateSolanaWallet();
+      } else {
+        wallet = generateEVMWallet();
+        wallet.chain = chain;
+      }
+
+      // Save to DB
+      saveWallet(wallet);
+
+      let text = `${CHAIN_EMOJI[chain]} Wallet ${CHAIN_LABELS[chain]} Generated:\n\n`;
+      text += `Address:\n${wallet.address}\n\n`;
+      text += `Private Key:\n${wallet.privateKey}\n`;
+      if (wallet.mnemonic) {
+        text += `\nMnemonic (simpan baik-baik!):\n${wallet.mnemonic}`;
+      }
+
+      text += `\n\nWallet sudah disimpan di database.`;
+
+      await ctx.reply(text);
+    } catch (err) {
+      await ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  // ===== /mywallets =====
+  bot.command('mywallets', async (ctx) => {
+    const wallets = getSavedWallets();
+
+    if (wallets.length === 0) {
+      return ctx.reply('Belum ada wallet tersimpan.\nKetik /wallet untuk generate.');
+    }
+
+    let text = `Saved Wallets:\n\n`;
+    let prevChain = '';
+
+    wallets.forEach((w, i) => {
+      if (w.chain !== prevChain) {
+        prevChain = w.chain;
+        text += `${CHAIN_EMOJI[prevChain] || ''} ${CHAIN_LABELS[prevChain] || prevChain}:\n`;
+      }
+      text += `  ${w.label || `#${w.id}`} | ${w.address.slice(0, 10)}...${w.address.slice(-6)}\n`;
+    });
+
+    await ctx.reply(text);
+  });
+
+  // ===== /stats =====
   bot.command('stats', async (ctx) => {
     const stats = getStats();
     let text = `Scanner Stats:\n`;
     text += `Total tokens: ${stats.total}\n\n`;
-    text += `By Grade:\n`;
+    text += `By Chain:\n`;
+    stats.byChain.forEach(c => {
+      text += `  ${CHAIN_LABELS[c.chain] || c.chain}: ${c.count}\n`;
+    });
+    text += `\nBy Grade:\n`;
     stats.byGrade.forEach(g => {
       text += `  ${g.grade}: ${g.count}\n`;
     });
@@ -206,7 +329,7 @@ export function setupCommands(bot) {
     await ctx.reply(text);
   });
 
-  // /clear
+  // ===== /clear =====
   bot.command('clear', async (ctx) => {
     if (!config.adminIds.includes(ctx.from.id)) {
       return ctx.reply('Unauthorized');

@@ -3,17 +3,15 @@ import { analyzeHolders } from './analyzer.js';
 import { upsertToken, getStats } from '../utils/database.js';
 import { config } from '../config.js';
 
+const CHAINS = ['solana', 'bsc', 'eth'];
 let isScanning = false;
 
-/**
- * Run a single scan cycle
- */
 export async function runScanCycle(bot) {
   if (isScanning) return;
   isScanning = true;
 
   try {
-    const tokens = await scanAllSources();
+    const tokens = await scanAllSources(CHAINS);
     if (tokens.length === 0) {
       console.log('[Scan] No tokens found this cycle');
       isScanning = false;
@@ -28,15 +26,15 @@ export async function runScanCycle(bot) {
 
       const score = scoreToken(token);
 
-      // Analyze holders only for promising tokens
       let risk = 'UNKNOWN';
-      if (score.score >= 4) {
+      if (score.score >= 4 && token.chain === 'solana') {
         const holderAnalysis = await analyzeHolders(address);
         risk = holderAnalysis?.risk || 'UNKNOWN';
       }
 
       const tokenData = {
         address,
+        chain: token.chain || 'solana',
         name: token.name || 'Unknown',
         symbol: token.symbol || '???',
         source: token.source || 'unknown',
@@ -56,19 +54,19 @@ export async function runScanCycle(bot) {
       }
     }
 
-    // Alert admins
     if (alerts.length > 0 && bot) {
       for (const adminId of config.adminIds) {
         let msg = `HIGH POTENTIAL TOKEN DETECTED:\n\n`;
         alerts.slice(0, 5).forEach(t => {
-          msg += `[${t.grade}] ${t.name} (${t.symbol})\n`;
+          const chainLabel = t.chain.toUpperCase();
+          msg += `[${t.grade}] [${chainLabel}] ${t.name} (${t.symbol})\n`;
           msg += `MC: $${t.market_cap.toLocaleString()} | Vol: $${t.volume_24h.toLocaleString()} | Holders: ${t.holders} | Risk: ${t.risk}\n`;
-          msg += `https://dexscreener.com/solana/${t.address}\n\n`;
+          msg += `https://dexscreener.com/${t.chain}/${t.address}\n\n`;
         });
         try {
           await bot.telegram.sendMessage(adminId, msg, { disable_web_page_preview: true });
         } catch {
-          // ignore send errors
+          // ignore
         }
       }
     }
@@ -82,11 +80,8 @@ export async function runScanCycle(bot) {
   }
 }
 
-/**
- * Start periodic scanning
- */
 export function startAutoScan(bot) {
-  console.log(`[Scan] Auto-scan started (interval: ${config.scanIntervalMs}ms)`);
+  console.log(`[Scan] Auto-scan started (interval: ${config.scanIntervalMs}ms) | Chains: ${CHAINS.join(', ')}`);
   runScanCycle(bot);
 
   const interval = setInterval(() => {

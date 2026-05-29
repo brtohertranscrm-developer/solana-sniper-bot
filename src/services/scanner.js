@@ -6,62 +6,24 @@ const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 
 const birdeyeHeaders = config.birdeyeApiKey
   ? { 'X-API-KEY': config.birdeyeApiKey }
-  : { 'X-API-KEY': 'public' };
+  : { 'X-API-KEY': '***' };
+
+const CHAIN_MAP = {
+  solana: { birdeye: 'solana', dexscreener: 'solana' },
+  bsc: { birdeye: 'bsc', dexscreener: 'bsc' },
+  eth: { birdeye: 'ethereum', dexscreener: 'ethereum' },
+};
 
 /**
- * Fetch top gainers / newest tokens from Birdeye
+ * Fetch token list from Birdeye for a chain
  */
-export async function fetchBirdeyeNewTokens(limit = 20) {
-  try {
-    const res = await axios.get(`${BIRDEYE_BASE}/defi/tokenlist`, {
-      params: {
-        chain_id: 'solana',
-        sort_by: 'v24hUSD',
-        sort_type: 'desc',
-        offset: 0,
-        limit,
-      },
-      headers: birdeyeHeaders,
-      timeout: 15000,
-    });
-    
-    if (!res.data?.success) {
-      console.error('[Birdeye] API returned unsuccessful:', res.data?.message);
-      return [];
-    }
-    
-    return (res.data.data || []).map(t => ({
-      address: t.address,
-      name: t.name,
-      symbol: t.symbol,
-      marketCap: t.mc || 0,
-      volume_24h: t.v24hUSD || 0,
-      price: t.price || 0,
-      priceChange24h: t.priceChange24h || 0,
-      priceChange6h: t.priceChange6h || 0,
-      priceChange1h: t.priceChange1h || 0,
-      liquidity: t.liquidity || 0,
-      holders: t.holder || 0,
-    }));
-  } catch (err) {
-    console.error('[Birdeye] Failed to fetch new tokens:', err.message);
-    return [];
-  }
-}
+async function fetchBirdeyeTokens(chain, sortBy = 'v24hUSD', sortType = 'desc', limit = 20) {
+  const chainId = CHAIN_MAP[chain]?.birdeye;
+  if (!chainId) return [];
 
-/**
- * Fetch trending tokens from Birdeye (top gainers)
- */
-export async function fetchBirdeyeTrending(limit = 20) {
   try {
     const res = await axios.get(`${BIRDEYE_BASE}/defi/tokenlist`, {
-      params: {
-        chain_id: 'solana',
-        sort_by: 'priceChange24h',
-        sort_type: 'desc',
-        offset: 0,
-        limit,
-      },
+      params: { chain_id: chainId, sort_by: sortBy, sort_type: sortType, offset: 0, limit },
       headers: birdeyeHeaders,
       timeout: 15000,
     });
@@ -76,22 +38,27 @@ export async function fetchBirdeyeTrending(limit = 20) {
       volume_24h: t.v24hUSD || 0,
       price: t.price || 0,
       priceChange24h: t.priceChange24h || 0,
+      priceChange6h: t.priceChange6h || 0,
+      priceChange1h: t.priceChange1h || 0,
       liquidity: t.liquidity || 0,
       holders: t.holder || 0,
     }));
   } catch (err) {
-    console.error('[Birdeye] Failed to fetch trending:', err.message);
+    console.error(`[Birdeye] Failed (${chain}):`, err.message);
     return [];
   }
 }
 
 /**
- * Fetch newly launched pairs from Dexscreener (Solana)
+ * Fetch new pairs from Dexscreener for a chain
  */
-export async function fetchDexscreenerNewPairs(limit = 30) {
+async function fetchDexscreenerNewPairs(chain, limit = 30) {
+  const chainId = CHAIN_MAP[chain]?.dexscreener;
+  if (!chainId) return [];
+
   try {
     const res = await axios.get(`${DEXSCREENER_BASE}/token-boosts/latest/v1`, {
-      params: { chainId: 'solana' },
+      params: { chainId },
       timeout: 15000,
     });
 
@@ -104,64 +71,42 @@ export async function fetchDexscreenerNewPairs(limit = 30) {
       price: parseFloat(t.price || 0),
       liquidity: parseFloat(t.liquidity || 0),
       holders: parseInt(t.txns?.buys || 0) + parseInt(t.txns?.sells || 0),
-      source: 'dexscreener',
     }));
   } catch (err) {
-    console.error('[Dexscreener] Failed to fetch new pairs:', err.message);
+    console.error(`[Dexscreener] Failed (${chain}):`, err.message);
     return [];
   }
 }
 
 /**
- * Search Dexscreener for specific token
- */
-export async function searchDexscreener(query) {
-  try {
-    const res = await axios.get(`${DEXSCREENER_BASE}/latest/dex/search`, {
-      params: { q: query },
-      timeout: 10000,
-    });
-    return (res.data?.pairs || []).filter(p => p.chainId === 'solana').slice(0, 10);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Score a token based on available metrics
+ * Score a token
  */
 export function scoreToken(token) {
   let score = 0;
   const breakdown = [];
 
-  // Market cap tiers
   const mc = parseFloat(token.marketCap || 0);
   if (mc > 1000) { score += 1; breakdown.push('MC>$1K'); }
   if (mc > 10000) { score += 1; breakdown.push('MC>$10K'); }
   if (mc > 50000) { score += 1; breakdown.push('MC>$50K'); }
   if (mc > 500000) { score += 1; breakdown.push('MC>$500K'); }
 
-  // Liquidity (important for safety)
   const liq = parseFloat(token.liquidity || 0);
   if (liq > 2000) { score += 1; breakdown.push('Liq>$2K'); }
   if (liq > 10000) { score += 1; breakdown.push('Liq>$10K'); }
 
-  // Holders / transactions
   const holders = parseInt(token.holders || 0);
   if (holders > 10) { score += 1; breakdown.push('Holders>10'); }
   if (holders > 50) { score += 1; breakdown.push('Holders>50'); }
 
-  // Volume
   const vol = parseFloat(token.volume_24h || 0);
   if (vol > 500) { score += 1; breakdown.push('Vol>$500'); }
   if (vol > 5000) { score += 1; breakdown.push('Vol>$5K'); }
 
-  // Price momentum
   const priceChange = parseFloat(token.priceChange24h || 0);
   if (priceChange > 50) { score += 1; breakdown.push('+50%'); }
   if (priceChange > 200) { score += 1; breakdown.push('+200%'); }
 
-  // Risk flag: if MC too high vs liquidity (potential no liquidity)
   if (mc > 0 && liq > 0 && mc / liq > 20) {
     score -= 2;
     breakdown.push('RISK:highMC/Liq');
@@ -178,29 +123,68 @@ export function scoreToken(token) {
 }
 
 /**
- * Unified scan - combines multiple sources
+ * Unified scan for a specific chain
  */
-export async function scanAllSources() {
+export async function scanChain(chain) {
   const [birdeyeTokens, dexPairs] = await Promise.allSettled([
-    fetchBirdeyeTrending(20),
-    fetchDexscreenerNewPairs(20),
+    fetchBirdeyeTokens(chain, 'v24hUSD', 'desc', 20),
+    fetchDexscreenerNewPairs(chain, 20),
   ]);
 
   const allTokens = [];
 
-  if (birdeyeTokens.status === 'fulfilled' && birdeyeTokens.value.length > 0) {
-    birdeyeTokens.value.forEach(t => allTokens.push({ ...t, source: 'birdeye' }));
+  if (birdeyeTokens.status === 'fulfilled') {
+    birdeyeTokens.value.forEach(t => allTokens.push({ ...t, source: 'birdeye', chain }));
+  }
+  if (dexPairs.status === 'fulfilled') {
+    dexPairs.value.forEach(t => allTokens.push({ ...t, source: 'dexscreener', chain }));
   }
 
-  if (dexPairs.status === 'fulfilled' && dexPairs.value.length > 0) {
-    dexPairs.value.forEach(t => allTokens.push({ ...t, source: 'dexscreener' }));
-  }
-
-  // Deduplicate by address
   const seen = new Set();
   return allTokens.filter(t => {
     if (!t.address || seen.has(t.address)) return false;
     seen.add(t.address);
     return true;
   });
+}
+
+/**
+ * Fetch trending for a specific chain
+ */
+export async function fetchTrending(chain) {
+  const [birdeye, dex] = await Promise.allSettled([
+    fetchBirdeyeTokens(chain, 'priceChange24h', 'desc', 10),
+    fetchDexscreenerNewPairs(chain, 10),
+  ]);
+
+  const all = [];
+  if (birdeye.status === 'fulfilled') {
+    birdeye.value.forEach(t => all.push({ ...t, source: 'birdeye', chain }));
+  }
+  if (dex.status === 'fulfilled') {
+    dex.value.forEach(t => all.push({ ...t, source: 'dexscreener', chain }));
+  }
+
+  const seen = new Set();
+  return all.filter(t => {
+    if (!t.address || seen.has(t.address)) return false;
+    seen.add(t.address);
+    return true;
+  });
+}
+
+/**
+ * Scan all chains
+ */
+export async function scanAllSources(chains = ['solana', 'bsc', 'eth']) {
+  const results = await Promise.allSettled(chains.map(c => scanChain(c)));
+  const allTokens = [];
+
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      allTokens.push(...r.value);
+    }
+  }
+
+  return allTokens;
 }
