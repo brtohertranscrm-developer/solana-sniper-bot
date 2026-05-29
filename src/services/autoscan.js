@@ -1,4 +1,4 @@
-import { fetchPumpfunNewTokens, scorePumpfunToken } from './scanner.js';
+import { scanAllSources, scoreToken } from './scanner.js';
 import { analyzeHolders } from './analyzer.js';
 import { upsertToken, getStats } from '../utils/database.js';
 import { config } from '../config.js';
@@ -6,28 +6,29 @@ import { config } from '../config.js';
 let isScanning = false;
 
 /**
- * Run a single scan cycle - fetch new tokens, score them, store results
+ * Run a single scan cycle
  */
 export async function runScanCycle(bot) {
   if (isScanning) return;
   isScanning = true;
 
   try {
-    const tokens = await fetchPumpfunNewTokens(50);
+    const tokens = await scanAllSources();
     if (tokens.length === 0) {
+      console.log('[Scan] No tokens found this cycle');
       isScanning = false;
       return;
     }
 
-    const alerts = []; // tokens worth alerting
+    const alerts = [];
 
     for (const token of tokens) {
-      const address = token.mint || token.address;
+      const address = token.address;
       if (!address) continue;
 
-      const score = scorePumpfunToken(token);
+      const score = scoreToken(token);
 
-      // Only analyze holders for promising tokens (score >= 4)
+      // Analyze holders only for promising tokens
       let risk = 'UNKNOWN';
       if (score.score >= 4) {
         const holderAnalysis = await analyzeHolders(address);
@@ -38,10 +39,10 @@ export async function runScanCycle(bot) {
         address,
         name: token.name || 'Unknown',
         symbol: token.symbol || '???',
-        source: 'pumpfun',
-        market_cap: parseFloat(token.usd_market_cap || token.marketCap || 0),
-        volume_24h: parseFloat(token.volume_24h || token.volume24h || 0),
-        holders: parseInt(token.holder_count || token.holders || 0),
+        source: token.source || 'unknown',
+        market_cap: parseFloat(token.marketCap || 0),
+        volume_24h: parseFloat(token.volume_24h || 0),
+        holders: parseInt(token.holders || 0),
         price: parseFloat(token.price || 0),
         score: score.score,
         grade: score.grade,
@@ -50,19 +51,18 @@ export async function runScanCycle(bot) {
 
       upsertToken(tokenData);
 
-      // Alert for high-potential tokens (A+ or A grade)
       if (score.grade === 'A+' || score.grade === 'A') {
         alerts.push(tokenData);
       }
     }
 
-    // Send alerts to admin
+    // Alert admins
     if (alerts.length > 0 && bot) {
       for (const adminId of config.adminIds) {
         let msg = `HIGH POTENTIAL TOKEN DETECTED:\n\n`;
         alerts.slice(0, 5).forEach(t => {
           msg += `[${t.grade}] ${t.name} (${t.symbol})\n`;
-          msg += `MC: $${t.market_cap.toLocaleString()} | Holders: ${t.holders} | Risk: ${t.risk}\n`;
+          msg += `MC: $${t.market_cap.toLocaleString()} | Vol: $${t.volume_24h.toLocaleString()} | Holders: ${t.holders} | Risk: ${t.risk}\n`;
           msg += `https://dexscreener.com/solana/${t.address}\n\n`;
         });
         try {
@@ -87,11 +87,8 @@ export async function runScanCycle(bot) {
  */
 export function startAutoScan(bot) {
   console.log(`[Scan] Auto-scan started (interval: ${config.scanIntervalMs}ms)`);
-  
-  // Run first scan immediately
   runScanCycle(bot);
 
-  // Then repeat
   const interval = setInterval(() => {
     runScanCycle(bot);
   }, config.scanIntervalMs);

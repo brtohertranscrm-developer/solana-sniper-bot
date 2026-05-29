@@ -1,22 +1,20 @@
-import { Telegraf } from 'telegraf';
 import { config } from '../config.js';
-import { getTopTokens, getTokensByGrade, getFlaggedTokens, getToken, getStats } from '../utils/database.js';
-import { getTokenOverview, analyzeHolders, getTokenTradeData } from '../services/analyzer.js';
-import { fetchPumpfunNewTokens, fetchPumpfunTrending, scorePumpfunToken } from '../services/scanner.js';
+import { getTopTokens, getTokensByGrade, getToken, getStats } from '../utils/database.js';
+import { getTokenOverview, analyzeHolders } from '../services/analyzer.js';
+import { scanAllSources, scoreToken, fetchBirdeyeTrending, fetchDexscreenerNewPairs } from '../services/scanner.js';
 
 export function setupCommands(bot) {
   // /start
   bot.start((ctx) => {
     ctx.reply(
       `Solana Token Scanner Bot v1.0\n\n` +
-      `Perintah:\n` +
+      `Commands:\n` +
       `/scan - Scan token baru sekarang\n` +
       `/top - Token dengan score tertinggi\n` +
       `/analyze [address] - Analisis detail token\n` +
-      `/trending - Token trending Pump.fun\n` +
+      `/trending - Token trending\n` +
       `/stats - Statistik scanner\n` +
-      `/help - Bantuan`,
-      { parse_mode: 'Markdown' }
+      `/help - Bantuan`
     );
   });
 
@@ -24,46 +22,44 @@ export function setupCommands(bot) {
   bot.help((ctx) => {
     ctx.reply(
       `Solana Token Scanner Bot\n\n` +
-      `Scanner & Analyzer Phase 1\n\n` +
-      `Perintah:\n` +
+      `Phase 1: Scanner & Analyzer\n\n` +
+      `Commands:\n` +
       `/scan - Manual scan token baru\n` +
       `/top [A+/A/B/C/D] - Top token by grade\n` +
-      `/analyze <token_address> - Detail analisis token\n` +
-      `/trending - Token trending Pump.fun\n` +
+      `/analyze <address> - Detail analisis token\n` +
+      `/trending - Token trending\n` +
       `/stats - Statistik database\n` +
-      `/clear - Reset database\n\n` +
+      `/help - Bantuan\n\n` +
       `Scoring:\n` +
-      `A+ = Sangat potensial (score 8+)\n` +
-      `A = Potensial (6-7)\n` +
-      `B = Menarik (4-5)\n` +
-      `C = Perlu perhatian (3)\n` +
-      `D = Rendah (0-2)`,
-      { parse_mode: 'Markdown' }
+      `A+ = Sangat potensial (10+)\n` +
+      `A = Potensial (7-9)\n` +
+      `B = Menarik (5-6)\n` +
+      `C = Perlu perhatian (3-4)\n` +
+      `D = Rendah (0-2)`
     );
   });
 
   // /scan - Manual scan
   bot.command('scan', async (ctx) => {
-    const msg = await ctx.reply('Scanning new tokens...');
+    const msg = await ctx.reply('Scanning...');
     try {
-      const tokens = await fetchPumpfunNewTokens(30);
+      const tokens = await scanAllSources();
       if (tokens.length === 0) {
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, 'Tidak ada token baru ditemukan.');
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, 'Tidak ada token ditemukan.');
         return;
       }
 
       let text = `Scan selesai. ${tokens.length} token ditemukan:\n\n`;
       tokens.slice(0, 15).forEach((t, i) => {
-        const name = t.name || 'Unknown';
-        const symbol = t.symbol || '?';
-        const mc = parseFloat(t.usd_market_cap || t.marketCap || 0);
-        const holders = t.holder_count || t.holders || '?';
-        text += `${i + 1}. ${name} (${symbol})\n`;
-        text += `   MC: $${mc.toLocaleString()} | Holders: ${holders}\n`;
-        text += `   /analyze_${t.mint || t.address}\n\n`;
+        const score = scoreToken(t);
+        text += `${i + 1}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
+        text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Liq: $${parseFloat(t.liquidity || 0).toLocaleString()} | Holders: ${t.holders}\n`;
+        text += `   Source: ${t.source} | /analyze_${t.address}\n\n`;
       });
 
-      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text);
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text, {
+        disable_web_page_preview: true,
+      });
     } catch (err) {
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `Error: ${err.message}`);
     }
@@ -80,7 +76,7 @@ export function setupCommands(bot) {
 
     let text = `Top Tokens${grade ? ` (Grade ${grade})` : ''}:\n\n`;
     tokens.forEach((t, i) => {
-      text += `${i + 1}. ${t.name} (${t.symbol}) [${t.grade}] - Score: ${t.score}\n`;
+      text += `${i + 1}. ${t.name} (${t.symbol}) [${t.grade}] Score: ${t.score}\n`;
       text += `   MC: $${t.market_cap.toLocaleString()} | Vol24h: $${t.volume_24h.toLocaleString()} | Risk: ${t.risk}\n`;
       text += `   /analyze_${t.address}\n\n`;
     });
@@ -91,25 +87,26 @@ export function setupCommands(bot) {
   // /analyze
   bot.command('analyze', async (ctx) => {
     const parts = ctx.message.text.split(' ');
-    const address = parts[1]?.startsWith('/') ? parts[1].replace('/analyze_', '') : parts[1];
+    const address = parts[1] || '';
 
     if (!address) {
       return ctx.reply('Format: /analyze <token_address>');
     }
 
-    const msg = await ctx.reply(`Analyzing ${address}...`);
+    const cleanAddress = address.replace(/^\/analyze_/, '');
+    const msg = await ctx.reply(`Analyzing ${cleanAddress}...`);
 
     try {
       const [overview, holders] = await Promise.all([
-        getTokenOverview(address),
-        analyzeHolders(address),
+        getTokenOverview(cleanAddress),
+        analyzeHolders(cleanAddress),
       ]);
 
       let text = `Analysis Report\n`;
-      text += `Address: \`${address.slice(0, 8)}...${address.slice(-4)}\`\n\n`;
+      text += `Address: ${cleanAddress.slice(0, 8)}...${cleanAddress.slice(-4)}\n\n`;
 
       if (overview) {
-        text += `Name: ${overview.symbol || 'N/A'}\n`;
+        text += `Symbol: ${overview.symbol || 'N/A'}\n`;
         text += `Price: $${parseFloat(overview.price || 0).toExponential(4)}\n`;
         text += `Market Cap: $${parseFloat(overview.mc || 0).toLocaleString()}\n`;
         text += `Volume 24h: $${parseFloat(overview.v24hUSD || 0).toLocaleString()}\n`;
@@ -118,30 +115,28 @@ export function setupCommands(bot) {
         text += `Price 6h: ${overview.priceChange6h || 'N/A'}%\n`;
         text += `Price 1h: ${overview.priceChange1h || 'N/A'}%\n`;
       } else {
-        text += `Basic info: Data not available via Birdeye\n`;
+        text += `Basic info: Data not available\n`;
       }
 
       text += `\nHolder Analysis:\n`;
       if (holders) {
-        text += `Total analyzed: ${holders.totalHolders}\n`;
-        text += `Top holder: ${holders.topHolderPct}%\n`;
-        text += `Top 5 holders: ${holders.top5Pct}%\n`;
-        text += `Risk level: ${holders.risk}\n\n`;
+        text += `Analyzed: ${holders.totalHolders} wallets\n`;
+        text += `Top holder owns: ${holders.topHolderPct}%\n`;
+        text += `Top 5 own: ${holders.top5Pct}%\n`;
+        text += `Risk: ${holders.risk}\n\n`;
         text += `Top Holders:\n`;
         holders.holders.forEach((h, i) => {
           text += `  ${i + 1}. ${h.address.slice(0, 6)}...${h.address.slice(-4)} (${h.pct}%)\n`;
         });
       } else {
-        text += `Data not available (Helius API key needed)\n`;
+        text += `Not available (need Helius API key for full data)\n`;
       }
 
-      // SolanaFM / Dexscreener links
       text += `\nLinks:\n`;
-      text += `Dexscreener: https://dexscreener.com/solana/${address}\n`;
-      text += `Solscan: https://solscan.io/token/${address}\n`;
+      text += `Dexscreener: https://dexscreener.com/solana/${cleanAddress}\n`;
+      text += `Solscan: https://solscan.io/token/${cleanAddress}\n`;
 
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text, {
-        parse_mode: 'Markdown',
         disable_web_page_preview: true,
       });
     } catch (err) {
@@ -149,28 +144,47 @@ export function setupCommands(bot) {
     }
   });
 
-  // /trending - Pump.fun trending
+  // /trending
   bot.command('trending', async (ctx) => {
     const msg = await ctx.reply('Fetching trending tokens...');
     try {
-      const tokens = await fetchPumpfunTrending(20);
-      if (tokens.length === 0) {
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, 'Tidak ada trending token.');
-        return;
+      const [birdeye, dex] = await Promise.allSettled([
+        fetchBirdeyeTrending(10),
+        fetchDexscreenerNewPairs(10),
+      ]);
+
+      let text = `Trending Solana Tokens:\n\n`;
+      let count = 0;
+
+      if (birdeye.status === 'fulfilled') {
+        birdeye.value.forEach((t, i) => {
+          if (count >= 15) return;
+          count++;
+          const score = scoreToken(t);
+          text += `${count}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
+          text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | +${t.priceChange24h || 0}%\n`;
+          text += `   Source: Birdeye | /analyze_${t.address}\n\n`;
+        });
       }
 
-      let text = `Trending Pump.fun:\n\n`;
-      tokens.forEach((t, i) => {
-        const score = scorePumpfunToken(t);
-        const mc = parseFloat(t.usd_market_cap || t.marketCap || 0);
-        const vol = parseFloat(t.volume_24h || t.volume24h || 0);
-        text += `${i + 1}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
-        text += `   MC: $${mc.toLocaleString()} | Vol: $${vol.toLocaleString()}\n`;
-        text += `   Score: ${score.score}/${score.maxScore} (${score.breakdown.join(', ')})\n`;
-        text += `   /analyze_${t.mint || t.address}\n\n`;
-      });
+      if (dex.status === 'fulfilled') {
+        dex.value.forEach((t) => {
+          if (count >= 15) return;
+          count++;
+          const score = scoreToken(t);
+          text += `${count}. ${t.name} (${t.symbol}) [${score.grade}]\n`;
+          text += `   MC: $${parseFloat(t.marketCap || 0).toLocaleString()} | Liq: $${parseFloat(t.liquidity || 0).toLocaleString()}\n`;
+          text += `   Source: Dexscreener | /analyze_${t.address}\n\n`;
+        });
+      }
 
-      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text);
+      if (count === 0) {
+        text += 'Tidak ada trending token ditemukan.';
+      }
+
+      await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, text, {
+        disable_web_page_preview: true,
+      });
     } catch (err) {
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `Error: ${err.message}`);
     }
@@ -192,7 +206,7 @@ export function setupCommands(bot) {
     await ctx.reply(text);
   });
 
-  // /clear - Reset DB
+  // /clear
   bot.command('clear', async (ctx) => {
     if (!config.adminIds.includes(ctx.from.id)) {
       return ctx.reply('Unauthorized');
@@ -201,19 +215,5 @@ export function setupCommands(bot) {
     db.exec('DELETE FROM scanned_tokens');
     db.exec('DELETE FROM alerts');
     await ctx.reply('Database cleared.');
-  });
-
-  // Handle callback queries for inline analyze buttons
-  bot.on('callback_query', async (ctx) => {
-    const data = ctx.callbackQuery.data;
-    if (data?.startsWith('analyze_')) {
-      const address = data.replace('analyze_', '');
-      ctx.answerCbQuery();
-      // Forward to /analyze logic
-      ctx.state.address = address;
-      ctx.message = { text: `/analyze ${address}`, from: ctx.from, chat: ctx.callbackQuery.message.chat };
-      // Re-use analyze command
-      await bot.commands.get('analyze')({ ...ctx, reply: ctx.reply.bind(ctx), telegram: ctx.telegram });
-    }
   });
 }

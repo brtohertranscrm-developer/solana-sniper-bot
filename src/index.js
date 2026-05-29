@@ -27,7 +27,11 @@ bot.catch((err) => {
 });
 
 // Start
-bot.launch().then(() => {
+bot.launch((err) => {
+  if (err) {
+    console.error('[Bot] Launch failed:', err.message);
+    process.exit(1);
+  }
   console.log('[Bot] Telegram bot started');
 
   // Start auto-scan after bot is ready
