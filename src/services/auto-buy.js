@@ -3,6 +3,7 @@ import { getSavedWallets } from './wallet.js';
 import { jupiterSwap } from './solana-swapper.js';
 import { evmBuy } from './evm-swapper.js';
 import { addPosition } from './portfolio.js';
+import { checkTokenSafety } from './token-safety.js';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 
@@ -84,6 +85,20 @@ export async function checkAutoBuy(bot, token) {
     for (const cfg of configs) {
       try {
         if (!matches(cfg, token) || !canBuy(cfg) || cfg.amount_per_buy <= 0) continue;
+
+        // Safety check before auto-buy
+        try {
+          const safety = await checkTokenSafety(chain, token.address);
+          if (safety.score < 30) {
+            console.log(`[AutoBuy] Safety blocked: ${token.symbol || token.address} score=${safety.score}`);
+            await notify(bot, cfg.user_id, `⚠️ Auto-Buy blocked: ${token.symbol || token.address} safety score ${safety.score}/100. Too risky.`);
+            continue;
+          }
+        } catch (err) {
+          console.error(`[AutoBuy] Safety check error for ${token.address}:`, err.message);
+          // Continue with buy on safety check failure — don't silently block
+        }
+
         const wallets = getSavedWallets(chain);
         const wallet = wallets[0];
         if (!wallet?.private_key) {
@@ -121,7 +136,7 @@ export async function checkAutoBuy(bot, token) {
           buy_amount_token: null,
           buy_price: parseFloat(token.price || token.priceUsd || 0),
           txid: result.txid,
-          tp_pct: 200,
+          tp_pct: 70,
           sl_pct: -30,
         });
         buys.push({ cfg, token, result });

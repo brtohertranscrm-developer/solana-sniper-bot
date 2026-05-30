@@ -20,13 +20,34 @@ export const config = {
   bondingIntervalMs: parseInt(process.env.BONDING_INTERVAL_MS) || 45000,
   volumeIntervalMs: parseInt(process.env.VOLUME_INTERVAL_MS) || 120000,
   tieredTpIntervalMs: parseInt(process.env.TIERED_TP_INTERVAL_MS) || 30000,
+  autoSellIntervalMs: parseInt(process.env.AUTO_SELL_INTERVAL_MS) || 30000,
+  limitOrderIntervalMs: parseInt(process.env.LIMIT_ORDER_INTERVAL_MS) || 15000,
+  safetyMinScore: parseInt(process.env.SAFETY_MIN_SCORE) || 30,
   volumeSpikePct: parseFloat(process.env.VOLUME_SPIKE_PCT) || 500,
   bondingCompletionAlertPct: parseFloat(process.env.BONDING_COMPLETION_ALERT_PCT) || 90,
   defaultPaperBalance: parseFloat(process.env.DEFAULT_PAPER_BALANCE) || 10000,
   filters: {
     minLiquiditySol: parseFloat(process.env.MIN_LIQUIDITY_SOL) || 5,
-    minHolders: parseInt(process.env.MIN_HOLDERS) || 10,
+    minHolders: parseInt(process.env.MIN_HOLDERS) || 20,
     maxTopHolderPct: parseFloat(process.env.MAX_TOP_HOLDER_PCT) || 30,
+  },
+  jito: {
+    apiUrl: process.env.JITO_API_URL || 'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+    tipLamports: parseInt(process.env.JITO_TIP_LAMPORTS) || 100000, // 0.0001 SOL default tip
+    enabled: process.env.JITO_ENABLED === 'true',
+  },
+  solanaRpcEndpoints: (process.env.SOLANA_RPC_ENDPOINTS || 'https://api.mainnet-beta.solana.com').split(',').map(s => s.trim()),
+  tools: {
+    wsStreamEnabled: process.env.WS_STREAM_ENABLED === 'true',
+    rpcFailoverEnabled: process.env.RPC_FAILOVER_ENABLED === 'true',
+    cacheTtlMs: parseInt(process.env.TX_CACHE_TTL_MS) || 15000,
+  },
+  autoBuy: {
+    amountPerBuySol: parseFloat(process.env.AMOUNT_PER_BUY_SOL) || 0.08,
+    maxBuysPerHour: parseInt(process.env.MAX_BUYS_PER_HOUR) || 1,
+    minMarketCap: parseFloat(process.env.MIN_MARKET_CAP) || 5000,
+    maxMarketCap: parseFloat(process.env.MAX_MARKET_CAP) || 100000,
+    maxSlippage: parseFloat(process.env.AUTO_BUY_SLIPPAGE) || 15,
   },
 };
 
